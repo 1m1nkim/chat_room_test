@@ -2,18 +2,18 @@
 <html>
 <head>
     <meta charset="UTF-8">
-    <title>1대1 채팅 (메모리 저장)</title>
+    <title>1:1 채팅 (웹소켓 채팅)</title>
     <script src="https://cdn.jsdelivr.net/npm/sockjs-client/dist/sockjs.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/stompjs/lib/stomp.min.js"></script>
     <script type="text/javascript">
         var stompClient = null;
+        var roomId = null;
 
-        // [1] 채팅 기록 불러오기 (REST API)
+        // 채팅 내역 로딩 (REST API)
         async function loadHistory() {
             var sender = document.getElementById("username").value;
             var receiver = document.getElementById("receiver").value;
-
-            // REST API 호출
+            // load history 시에도 동일한 채팅방 ID 기준으로 조회
             let response = await fetch(`/api/chat/history?sender=${sender}&receiver=${receiver}`);
             if (response.ok) {
                 let messages = await response.json();
@@ -25,25 +25,32 @@
             }
         }
 
-        // [2] 웹소켓 연결
+        // 알파벳 순으로 채팅방 ID 생성 (서버와 동일한 로직)
+        function getRoomId(sender, receiver) {
+            return (sender < receiver) ? sender + ":" + receiver : receiver + ":" + sender;
+        }
+
+        // 웹소켓 연결 및 채팅방 구독
         function connect() {
-            // 먼저 기존 채팅 기록 불러오기
+            var sender = document.getElementById("username").value;
+            var receiver = document.getElementById("receiver").value;
+            roomId = getRoomId(sender, receiver);
+
+            // 먼저 채팅 내역 로딩 (양쪽 클라이언트 모두 연결 시 호출하면 자동으로 히스토리 표시)
             loadHistory().then(() => {
                 var socket = new SockJS('/ws-chat');
                 stompClient = Stomp.over(socket);
                 stompClient.connect({}, function(frame) {
                     console.log('Connected: ' + frame);
-
-                    var username = document.getElementById("username").value;
-                    // 개인 큐 구독
-                    stompClient.subscribe('/user/' + username + '/queue/messages', function(message) {
+                    // 채팅방 topic 구독 (양쪽 클라이언트 모두 이 topic을 구독)
+                    stompClient.subscribe('/topic/chat/' + roomId, function(message) {
                         showMessage(JSON.parse(message.body));
                     });
                 });
             });
         }
 
-        // 메시지 전송
+        // 메시지 전송 (서버에서 topic으로 방송하므로, 별도의 낙관적 업데이트 없이 수신 콜백에서 처리)
         function sendMessage() {
             var sender = document.getElementById("username").value;
             var receiver = document.getElementById("receiver").value;
@@ -56,9 +63,11 @@
             };
 
             stompClient.send("/app/chat.send", {}, JSON.stringify(chatMessage));
+            // 입력란 초기화
+            document.getElementById("content").value = "";
         }
 
-        // 메시지를 화면에 표시
+        // 메시지 표시 함수
         function showMessage(message) {
             var messages = document.getElementById("messages");
             var li = document.createElement("li");
@@ -68,12 +77,12 @@
     </script>
 </head>
 <body>
-<h2>1대1 채팅 클라이언트 (서버 메모리 저장)</h2>
+<h2>1:1 채팅 인터페이스 (웹소켓 채팅)</h2>
 <div>
     <label>Username:</label>
-    <input type="text" id="username" placeholder="내 이름">
+    <input type="text" id="username" placeholder="본인 아이디">
     <label>Receiver:</label>
-    <input type="text" id="receiver" placeholder="상대방 이름">
+    <input type="text" id="receiver" placeholder="상대방 아이디">
     <button onclick="connect()">Connect & Load History</button>
 </div>
 <hr/>

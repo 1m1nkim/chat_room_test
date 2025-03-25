@@ -21,15 +21,11 @@ public class ChatController {
 
     @MessageMapping("/chat.send")
     public void sendMessage(ChatMessage chatMessage) {
-        // 1) 서버 메모리에 메시지 저장
+        // 메시지 저장
         chatService.saveMessage(chatMessage);
 
-        // 2) 상대방에게 실시간 전송
-        messagingTemplate.convertAndSendToUser(
-                chatMessage.getReceiver(),
-                "/queue/messages",
-                chatMessage
-        );
+        // 채팅방(topic)에 메시지 방송 (채팅방 ID는 sender, receiver의 알파벳 순으로 구성)
+        String roomId = chatService.getRoomId(chatMessage.getSender(), chatMessage.getReceiver());
+        messagingTemplate.convertAndSend("/topic/chat/" + roomId, chatMessage);
     }
 }
-

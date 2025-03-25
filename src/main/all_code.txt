@@ -1,0 +1,272 @@
+---- ?�일: C:\intelij_workspace\chatroom_test\src\main\java\com\chatroom_test\ChatroomTestApplication.java ---- 
+package com.chatroom_test;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class ChatroomTestApplication {
+
+    public static void main(String[] args) {
+        SpringApplication.run(ChatroomTestApplication.class, args);
+    }
+
+}
+ 
+---- ?�일: C:\intelij_workspace\chatroom_test\src\main\java\com\chatroom_test\config\WebSocketConfig.java ---- 
+package com.chatroom_test.config;
+
+import org.springframework.context.annotation.Configuration;
+import org.springframework.messaging.simp.config.MessageBrokerRegistry;
+import org.springframework.web.socket.config.annotation.*;
+
+@Configuration
+@EnableWebSocketMessageBroker
+public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
+
+    @Override
+    public void registerStompEndpoints(StompEndpointRegistry registry) {
+        registry.addEndpoint("/ws-chat")
+                .setAllowedOriginPatterns("*")  // CORS 이슈 방지
+                .withSockJS();
+    }
+
+    @Override
+    public void configureMessageBroker(MessageBrokerRegistry registry) {
+        // 간단한 메모리 기반 브로커
+        registry.enableSimpleBroker("/queue", "/topic");
+        registry.setApplicationDestinationPrefixes("/app");
+        registry.setUserDestinationPrefix("/user");
+    }
+}
+
+
+ 
+---- ?�일: C:\intelij_workspace\chatroom_test\src\main\java\com\chatroom_test\controller\ChatController.java ---- 
+package com.chatroom_test.controller;
+
+import com.chatroom_test.entity.ChatMessage;
+import com.chatroom_test.service.ChatService;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.messaging.handler.annotation.MessageMapping;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
+import org.springframework.stereotype.Controller;
+
+@Controller
+public class ChatController {
+
+    private final SimpMessagingTemplate messagingTemplate;
+    private final ChatService chatService;
+
+    @Autowired
+    public ChatController(SimpMessagingTemplate messagingTemplate, ChatService chatService) {
+        this.messagingTemplate = messagingTemplate;
+        this.chatService = chatService;
+    }
+
+    @MessageMapping("/chat.send")
+    public void sendMessage(ChatMessage chatMessage) {
+        // 1) 서버 메모리에 메시지 저장
+        chatService.saveMessage(chatMessage);
+
+        // 2) 상대방에게 실시간 전송
+        messagingTemplate.convertAndSendToUser(
+                chatMessage.getReceiver(),
+                "/queue/messages",
+                chatMessage
+        );
+    }
+}
+
+ 
+---- ?�일: C:\intelij_workspace\chatroom_test\src\main\java\com\chatroom_test\controller\ChatRestController.java ---- 
+package com.chatroom_test.controller;
+
+import com.chatroom_test.entity.ChatMessage;
+import com.chatroom_test.service.ChatService;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
+
+@RestController
+@RequestMapping("/api/chat")
+public class ChatRestController {
+
+    private final ChatService chatService;
+
+    @Autowired
+    public ChatRestController(ChatService chatService) {
+        this.chatService = chatService;
+    }
+
+    @GetMapping("/history")
+    public List<ChatMessage> getHistory(@RequestParam String sender, @RequestParam String receiver) {
+        return chatService.getMessages(sender, receiver);
+    }
+}
+ 
+---- ?�일: C:\intelij_workspace\chatroom_test\src\main\java\com\chatroom_test\entity\ChatMessage.java ---- 
+package com.chatroom_test.entity;
+
+public class ChatMessage {
+    private String sender;
+    private String receiver;
+    private String content;
+
+    public ChatMessage() {
+    }
+
+    public ChatMessage(String sender, String receiver, String content) {
+        this.sender = sender;
+        this.receiver = receiver;
+        this.content = content;
+    }
+
+    public String getSender() {
+        return sender;
+    }
+    public void setSender(String sender) {
+        this.sender = sender;
+    }
+    public String getReceiver() {
+        return receiver;
+    }
+    public void setReceiver(String receiver) {
+        this.receiver = receiver;
+    }
+    public String getContent() {
+        return content;
+    }
+    public void setContent(String content) {
+        this.content = content;
+    }
+}
+ 
+---- ?�일: C:\intelij_workspace\chatroom_test\src\main\java\com\chatroom_test\service\ChatService.java ---- 
+package com.chatroom_test.service;
+
+import com.chatroom_test.entity.ChatMessage;
+import org.springframework.stereotype.Service;
+
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+
+@Service
+public class ChatService {
+
+    // <방 ID, 메시지 목록>
+    private final Map<String, List<ChatMessage>> chatRooms = new ConcurrentHashMap<>();
+
+    // 1대1 채팅방 ID 생성 (sender와 receiver를 정렬하여 동일 조합 생성)
+    public String getRoomId(String sender, String receiver) {
+        if (sender.compareTo(receiver) < 0) {
+            return sender + ":" + receiver;
+        } else {
+            return receiver + ":" + sender;
+        }
+    }
+
+    // 메시지 저장
+    public void saveMessage(ChatMessage message) {
+        String roomId = getRoomId(message.getSender(), message.getReceiver());
+        chatRooms.putIfAbsent(roomId, new ArrayList<>());
+        chatRooms.get(roomId).add(message);
+    }
+
+    // 메시지 목록 조회
+    public List<ChatMessage> getMessages(String sender, String receiver) {
+        String roomId = getRoomId(sender, receiver);
+        return chatRooms.getOrDefault(roomId, Collections.emptyList());
+    }
+}
+ 
+---- ?�일: C:\intelij_workspace\chatroom_test\src\main\resources\static\index.html ---- 
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>1대1 채팅 (메모리 저장)</title>
+    <script src="https://cdn.jsdelivr.net/npm/sockjs-client/dist/sockjs.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/stompjs/lib/stomp.min.js"></script>
+    <script type="text/javascript">
+        var stompClient = null;
+
+        // [1] 채팅 기록 불러오기 (REST API)
+        async function loadHistory() {
+            var sender = document.getElementById("username").value;
+            var receiver = document.getElementById("receiver").value;
+
+            // REST API 호출
+            let response = await fetch(`/api/chat/history?sender=${sender}&receiver=${receiver}`);
+            if (response.ok) {
+                let messages = await response.json();
+                messages.forEach(function(msg) {
+                    showMessage(msg);
+                });
+            } else {
+                console.log("Failed to fetch history", response.status);
+            }
+        }
+
+        // [2] 웹소켓 연결
+        function connect() {
+            // 먼저 기존 채팅 기록 불러오기
+            loadHistory().then(() => {
+                var socket = new SockJS('/ws-chat');
+                stompClient = Stomp.over(socket);
+                stompClient.connect({}, function(frame) {
+                    console.log('Connected: ' + frame);
+
+                    var username = document.getElementById("username").value;
+                    // 개인 큐 구독
+                    stompClient.subscribe('/user/' + username + '/queue/messages', function(message) {
+                        showMessage(JSON.parse(message.body));
+                    });
+                });
+            });
+        }
+
+        // 메시지 전송
+        function sendMessage() {
+            var sender = document.getElementById("username").value;
+            var receiver = document.getElementById("receiver").value;
+            var content = document.getElementById("content").value;
+
+            var chatMessage = {
+                sender: sender,
+                receiver: receiver,
+                content: content
+            };
+
+            stompClient.send("/app/chat.send", {}, JSON.stringify(chatMessage));
+        }
+
+        // 메시지를 화면에 표시
+        function showMessage(message) {
+            var messages = document.getElementById("messages");
+            var li = document.createElement("li");
+            li.innerHTML = "<strong>" + message.sender + "</strong>: " + message.content;
+            messages.appendChild(li);
+        }
+    </script>
+</head>
+<body>
+<h2>1대1 채팅 클라이언트 (서버 메모리 저장)</h2>
+<div>
+    <label>Username:</label>
+    <input type="text" id="username" placeholder="내 이름">
+    <label>Receiver:</label>
+    <input type="text" id="receiver" placeholder="상대방 이름">
+    <button onclick="connect()">Connect & Load History</button>
+</div>
+<hr/>
+<div>
+    <label>Message:</label>
+    <input type="text" id="content" placeholder="메시지를 입력하세요">
+    <button onclick="sendMessage()">Send</button>
+</div>
+<ul id="messages"></ul>
+</body>
+</html>
+ 
